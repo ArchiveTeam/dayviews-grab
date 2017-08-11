@@ -1,8 +1,9 @@
 dofile("urlcode.lua")
 dofile("table_show.lua")
+JSON = (loadfile "JSON.lua")()
 
 local item_type = os.getenv('item_type')
-local item_value = os.getenv('item_value')
+local item_value = string.lower(os.getenv('item_value'))
 local item_dir = os.getenv('item_dir')
 local warc_file_base = os.getenv('warc_file_base')
 
@@ -18,12 +19,15 @@ for ignore in io.open("ignore-list", "r"):lines() do
   downloaded[ignore] = true
 end
 
-ids[item_value] = true
+local disco_users = {}
 
-local discotags = {}
-local img_prefix = nil
-
-local prev_apis = {}
+load_json_file = function(file)
+  if file then
+    return JSON:decode(file)
+  else
+    return nil
+  end
+end
 
 read_file = function(file)
   if file then
@@ -37,18 +41,37 @@ read_file = function(file)
 end
 
 allowed = function(url, parenturl)
+  if string.match(url, "https?://dayviews%.com/[A-Za-z0-9%-_%.]+") then
+    disco_users[string.lower(string.match(url, "https?://dayviews%.com/([A-Za-z0-9%-_%.]+)"))] = true
+  end
+
   if string.match(url, "'+")
      or string.match(url, "[<>\\]")
      or string.match(url, "//$")
      or string.match(url, "^https?://[^/]*facebook%.com")
-     or string.match(url, "^https?://[^/]*twitter%.com") then
+     or string.match(url, "^https?://[^/]*twitter%.com")
+     or string.match(url, "uid%.profile")
+     or string.match(url, "%?$")
+     or string.match(url, "sendRawJPEGBinary")
+     or string.match(url, "%?signature=[a-f0-9]+&sts=[0-9]+")
+     or not string.match(url, "^https?://[^/]*dayviews%.com") then
     return false
   end
 
-  for s in string.gmatch(url, "([0-9a-zA-Z%-_]+)") do
-    if s == item_value then
+  if string.match(url, "^https?://dayviews%.com/[^/]+/[0-9]+/1/$") then
+    if tonumber(string.match(url, "^https?://dayviews%.com/[^/]+/([0-9]+)/1/$")) >= 2018 then
+      return false
+    end
+  end
+
+  for s in string.gmatch(url, "([0-9a-zA-Z%-_%.]+)") do
+    if string.lower(s) == item_value then
       return true
     end
+  end
+
+  if string.match(url, "^https?://cdn[0-9]+%.dayviews%.com/[0-9]+/_") then
+    return true
   end
 
   return false
@@ -57,6 +80,18 @@ end
 wget.callbacks.download_child_p = function(urlpos, parent, depth, start_url_parsed, iri, verdict, reason)
   local url = urlpos["url"]["url"]
   local html = urlpos["link_expect_html"]
+
+  if string.match(url, "^https?://[^/]*dayviews%.com/[^/]+") then
+    s = string.match(url, "^https?://[^/]*dayviews%.com/([^/]+)")
+    if string.lower(s) == item_value and string.lower(s) ~= s then
+      return false
+    end
+  end
+
+  if string.match(url, "signature=") then
+    print(url)
+    return false
+  end
 
   if (downloaded[url] ~= true and addedtolist[url] ~= true)
      and (allowed(url, parent["url"]) or html == 0) then
@@ -77,6 +112,12 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
     local origurl = url
     local url = string.match(urla, "^([^#]+)")
     local url_ = string.gsub(url, "&amp;", "&")
+    if string.match(url_, "^https?://[^/]*dayviews%.com/[^/]+") then
+      s = string.match(url_, "^https?://[^/]*dayviews%.com/([^/]+)")
+      if string.lower(s) == item_value then
+        url_ = string.match(url_, "^(https?://[^/]*dayviews%.com/)[^/]+") .. string.lower(s) .. string.match(url_, "^https?://[^/]*dayviews%.com/[^/]+(.*)")
+      end
+    end
     if (downloaded[url_] ~= true and addedtolist[url_] ~= true)
        and allowed(url_, origurl) then
       table.insert(urls, { url=url_ })
@@ -119,6 +160,34 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
   
   if allowed(url, nil)  then
     html = read_file(file)
+
+    if string.match(url, "^https?://dayviews%.com/[^/]+/") then
+      check(string.match(url, "^(https?://dayviews%.com/.+/)") .. "?content=1")
+    end
+    if string.match(url, "%?source=") then
+      check(string.match(url, "^(.+)%?source="))
+    end
+    if string.match(url, "//") then
+      check(string.gsub(url, "//", "/"))
+    end
+    if string.match(url, "^https?://dayviews%.com/[^/]+/[0-9]+/[0-9]+/$") then
+      u, y, m = string.match(url, "^https?://dayviews%.com/([^/]+)/([0-9]+)/([0-9]+)/$")
+      check("http://dayviews.com/p/left_calendar.html?diaryname=" .. u .. "&year=" .. y .. "&month=" .. m)
+      check("http://dayviews.com/p/left_calendar.html?diaryname=" .. u .. "&year=" .. y)
+    end
+    if string.match(url, "/p/ajax%.html%?action=getNextMonthviewImageRow&fromImagechooser=[0-9]+&start=[0-9]+&year=[0-9]+&month=[0-9]+&diaryname=") then
+      json_ = load_json_file(html)
+      if json_["moreImages"] ~= nil then
+        a, n, b = string.match(url, "(.+start=)([0-9]+)(.+)")
+        checknewurl(a .. tostring(tonumber(n) + 5) .. b)
+      end
+    end
+    if string.match(html, '"/p/ajax%.html%?action=getNextMonthviewImageRow&fromImagechooser=[0-9]+&start="%+startMonthviewImage%+"&year=[0-9]+&month=[0-9]+&diaryname=[^"]+"') then
+      a, b = string.match(html, '"(/p/ajax%.html%?action=getNextMonthviewImageRow&fromImagechooser=[0-9]+&start=)"%+startMonthviewImage%+"(&year=[0-9]+&month=[0-9]+&diaryname=[^"]+)"')
+      checknewurl(a .. "0" .. b)
+      checknewurl(a .. "0" .. b .. "&json=1")
+    end
+
     for newurl in string.gmatch(html, '([^"]+)') do
       checknewurl(newurl)
     end
@@ -166,7 +235,7 @@ wget.callbacks.httploop_result = function(url, err, http_stat)
     io.stdout:flush()
     os.execute("sleep 1")
     tries = tries + 1
-    if tries >= 20 then
+    if tries >= 5 then
       io.stdout:write("\nI give up...\n")
       io.stdout:flush()
       tries = 0
@@ -189,6 +258,14 @@ wget.callbacks.httploop_result = function(url, err, http_stat)
   end
 
   return wget.actions.NOTHING
+end
+
+wget.callbacks.finish = function(start_time, end_time, wall_time, numurls, total_downloaded_bytes, total_download_time)
+  local file = io.open(item_dir..'/'..warc_file_base..'_data.txt', 'w')
+  for user, _ in pairs(disco_users) do
+    file:write("user:" .. user .. "\n")
+  end
+  file:close()
 end
 
 wget.callbacks.before_exit = function(exit_status, exit_status_string)
